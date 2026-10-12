@@ -83,4 +83,4 @@ frontmatter 支持 `name`、`description`、`model`、`thinking`、`tools`，正
 - 切换取消、初始化失败、重读角色、扩展重载和退出后确认没有后台串写、公共目录回退或残留在途写入。
 - 修改、添加、删除示例角色，确认定义生效；只读角色的业务写入工具被拦截，自身记忆工具仍可用，项目指令仍有效。
 
-源码已置于本地 Git 仓库，尚未暂存、提交或推送。`.gitignore` 排除记忆、会话、数据库、交接状态、凭据、日志与依赖。上游来源和适配范围见 `SOURCE.md`。
+源码由 Git 管理并推送到自己的仓库。`master` 保存角色插件，`hermes-upstream` 保存原版 Hermes 基线；后续上游升级流程见 [UPSTREAM-UPDATE.md](UPSTREAM-UPDATE.md)。`.gitignore` 排除记忆、会话、数据库、交接状态、凭据、日志与依赖。上游来源和适配范围见 `SOURCE.md`，当前基线引用与提交号见 `UPSTREAM.md`。

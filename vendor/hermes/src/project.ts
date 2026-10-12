@@ -7,9 +7,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { resolveProjectsRoot } from "./paths.js";
+import { createHash } from "node:crypto";
 
 export interface ProjectInfo {
-  /** Project name (directory basename), or null if not in a project. */
+  /** Canonical path hash for active project storage, or null outside a project. */
   name: string | null;
   /** Path to the project-scoped memory directory, or null. */
   memoryDir: string | null;
@@ -114,7 +115,8 @@ export function detectProject(projectsMemoryDir = "projects-memory", cwd?: strin
   }
 
   const projectsRoot = resolveProjectsRoot(projectsMemoryDir);
-  const name = resolveProjectName(resolved, resolvedHome, cwdName, projectsRoot);
+  const normalized = process.platform === "win32" ? fs.realpathSync.native(resolved).toLowerCase() : fs.realpathSync(resolved);
+  const name = createHash("sha256").update(normalized).digest("hex");
 
   return {
     name,

@@ -32,7 +32,7 @@ import {
   ENTRY_DELIMITER,
 } from "../constants.js";
 import type { ConsolidationResult, MemoryConfig } from "../types.js";
-import { AGENT_ROOT } from "../paths.js";
+import { getAgentRoot } from "../paths.js";
 import { execChildPrompt } from "./pi-child-process.js";
 import { runDirectMemoryCompletion, usesDirectTransport, type DirectReviewContext } from "./review-memory-ops.js";
 import { AtomicLockCoordinator } from "../store/atomic-lock-coordinator.js";
@@ -73,7 +73,7 @@ interface ConsolidationLockAttempt {
 
 function consolidationLockRoot(): string {
   return process.env[CONSOLIDATION_LOCK_ENV]?.trim()
-    || path.join(AGENT_ROOT, "pi-hermes-memory", ".consolidation-locks");
+    || path.join(getAgentRoot(), "pi-hermes-memory", ".consolidation-locks");
 }
 
 function sanitizeLockPart(value: string): string {
@@ -388,6 +388,9 @@ export async function triggerConsolidation(
     }
   }
 
+    if (usesDirectTransport(llmConfig)) {
+      return { consolidated: false, error: "Direct consolidation failed or has no active model context; subprocess fallback is disabled" };
+    }
     const chunkChars = chunkCharsFor(llmConfig);
     const chunkingEnabled = llmConfig.consolidationChunking === true;
     const hasUsage = typeof (store as any).capacityUsage === "function";

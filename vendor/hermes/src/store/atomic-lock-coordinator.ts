@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { isBunRuntime, loadBetterSqlite3 } from './sqlite-native.js';
+import { hermesScope } from '../runtime-scope.js';
 
 type StatementLike = {
   run: (...args: unknown[]) => unknown;
@@ -378,6 +379,25 @@ export class AtomicLockCoordinator {
       coordinator = new AtomicLockCoordinator(dbPath);
       sharedCoordinators.set(key, coordinator);
     }
+    const owned = coordinator;
+    hermesScope.getStore()?.closers?.set(key, () => {
+      const prefix = `${key}\0`;
+      let failed = false;
+      try {
+        for (const [pendingKey, release] of [...pendingReleases.entries()]) {
+          if (!pendingKey.startsWith(prefix)) continue;
+          release();
+          if (pendingReleases.has(pendingKey)) {
+            pendingReleases.delete(pendingKey);
+            failed = true;
+          }
+        }
+      } finally {
+        owned.discardCachedDb();
+        if (sharedCoordinators.get(key) === owned) sharedCoordinators.delete(key);
+      }
+      if (failed) throw new Error(`Unable to release all mutation locks before closing ${key}`);
+    });
     return coordinator;
   }
 }

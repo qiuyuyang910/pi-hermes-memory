@@ -20,7 +20,7 @@ import {
   tokenizeForSimilarity,
 } from "./skill-utils.js";
 import type { SkillDocument, SkillIndex, SkillResult, SkillScope } from "../types.js";
-import { AGENT_ROOT } from "../paths.js";
+import { getAgentRoot } from "../paths.js";
 
 interface SkillStoreOptions {
   /** Where this extension writes global skills. Never Pi's own root. */
@@ -162,7 +162,7 @@ export class SkillStore {
   private migrationSentinelPath: string;
 
   constructor(options: SkillStoreOptions = {}) {
-    const agentRoot = AGENT_ROOT;
+    const agentRoot = getAgentRoot();
     this.globalSkillsDir = options.globalSkillsDir ?? path.join(agentRoot, "pi-hermes-memory", "skills");
     this.piGlobalSkillsDir = options.piGlobalSkillsDir ?? path.join(agentRoot, "skills");
     this.projectSkillsDir = options.projectSkillsDir ?? null;

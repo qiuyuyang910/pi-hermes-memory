@@ -193,7 +193,7 @@ export function loadBetterSqlite3(options: SqliteNativeLoadOptions = {}): Better
     return loadOnce();
   } catch (firstError) {
     const packageRoot = resolveBetterSqlite3PackageRoot(requireImpl);
-    const canRebuild = options.allowRebuild ?? isNativeModuleAbiMismatch(firstError);
+    const canRebuild = options.allowRebuild ?? false;
     if (!canRebuild || !packageRoot) {
       if (isNativeModuleAbiMismatch(firstError)) {
         throw new BetterSqlite3LoadError(

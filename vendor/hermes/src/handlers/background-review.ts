@@ -182,7 +182,7 @@ export function setupBackgroundReview(
     shutdownPromise ??= (async () => {
       sessionAbort.abort();
       const inFlight = activeReview;
-      if (inFlight) await awaitUpTo(inFlight, shutdownGraceMs);
+      if (inFlight) await inFlight;
     })();
     return shutdownPromise;
   };
@@ -316,6 +316,10 @@ export function setupBackgroundReview(
       if (sessionCancelled()) return;
 
       let subprocessResult: { code: number; stdout?: string; stderr?: string };
+      if (usesDirectTransport(config)) {
+        ctx.ui.notify(`Hermes direct review failed: ${directFailure ?? "unknown error"}`, "warning");
+        return;
+      }
       try {
         subprocessResult = await runSubprocessReview(
           pi,

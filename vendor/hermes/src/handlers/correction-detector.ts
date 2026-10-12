@@ -273,7 +273,7 @@ export function setupCorrectionDetector(
         }
       }
 
-      if (!handledDirect) {
+      if (!handledDirect && !usesDirectTransport(config)) {
         await runSubprocessCorrection();
       }
 

@@ -1,0 +1,17 @@
+node_modules/
+.state/
+sessions/
+projects-memory/
+pi-hermes-memory/
+memory/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+auth.json
+models.json
+mcp-auth.json
+.env
+.env.*
+hermes-memory-config.json

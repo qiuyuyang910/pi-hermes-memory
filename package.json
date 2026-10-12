@@ -1,0 +1,19 @@
+{
+  "name": "pi-roles-hermes-memory",
+  "private": true,
+  "type": "module",
+  "description": "Pi roles with instance-owned Hermes memory and native sessions",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "pi": { "extensions": ["./src/index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "strip-ansi": "7.2.0",
+    "typebox": "^1.1.33"
+  }
+}

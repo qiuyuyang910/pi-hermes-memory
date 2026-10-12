@@ -7,7 +7,7 @@ import { searchSessions, getIndexedMessageCount } from '../store/session-search.
 import { searchSessionAnchors } from '../store/session-anchor-search.js';
 import type { SessionAnchorRange, SessionAnchorSearchResult } from '../store/session-anchor-search.js';
 import type { SessionSearchConfig } from '../types.js';
-import { getSessionsDir } from '../paths.js';
+import { AGENT_ROOT } from '../paths.js';
 import { createSharedToolResultRenderer } from './shared-output-view.js';
 import { searchResultView } from './tool-result-views.js';
 
@@ -27,6 +27,7 @@ interface SessionSearchToolOptions {
   sessionsDir?: string;
 }
 
+const DEFAULT_SESSIONS_DIR = path.join(AGENT_ROOT, 'sessions');
 const DEFAULT_LEGACY_SNIPPET_CHARS = 1_200;
 const MAX_LEGACY_SNIPPET_CHARS = 4_000;
 const MAX_LEGACY_OUTPUT_CHARS = 50 * 1024;
@@ -55,7 +56,7 @@ export function registerSessionSearchTool(
   options: SessionSearchToolOptions = {},
 ): void {
   if (sessionSearchConfig.variant === 'anchors') {
-    registerAnchorSessionSearchTool(pi, options.sessionsDir ?? getSessionsDir());
+    registerAnchorSessionSearchTool(pi, options.sessionsDir ?? DEFAULT_SESSIONS_DIR);
     return;
   }
 

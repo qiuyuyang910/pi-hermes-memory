@@ -35,7 +35,7 @@ import type {
   MemoryMutationOperation,
   MemoryOverflowStrategy,
 } from "../types.js";
-import { getAgentRoot } from "../paths.js";
+import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
@@ -83,7 +83,7 @@ export class MemoryStore {
   // ─── Path helpers ───
 
   private get memoryDir(): string {
-    return this.config.memoryDir ?? path.join(getAgentRoot(), "pi-hermes-memory");
+    return this.config.memoryDir ?? path.join(AGENT_ROOT, "pi-hermes-memory");
   }
 
   private pathFor(target: "memory" | "user" | "failure"): string {

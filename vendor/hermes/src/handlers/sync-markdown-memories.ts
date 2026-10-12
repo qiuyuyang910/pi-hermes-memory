@@ -12,7 +12,7 @@ import {
   reconcileMarkdownMemoryScope,
 } from '../store/sqlite-memory-store.js';
 import { ENTRY_DELIMITER, MEMORY_FILE, USER_FILE } from '../constants.js';
-import { getAgentRoot } from '../paths.js';
+import { AGENT_ROOT } from '../paths.js';
 import {
   migrateExtensionRoot,
   type ExtensionRootMigrationOptions,
@@ -144,7 +144,7 @@ export async function syncMarkdownMemoriesToSqlite(
   dbManager: DatabaseManager,
   globalDir: string,
   projectsMemoryDir?: string,
-  agentRoot = getAgentRoot(),
+  agentRoot = AGENT_ROOT,
   options?: SyncMarkdownOptions,
 ): Promise<BackfillCounters & { projectCount: number }> {
   const counters: BackfillCounters = {
@@ -235,7 +235,7 @@ export async function migrateThenSyncMarkdownMemories(
   legacyGlobalDir: string | null,
   globalDir: string,
   projectsMemoryDir?: string,
-  agentRoot = getAgentRoot(),
+  agentRoot = AGENT_ROOT,
   migrationOptions: MigrationSyncOptions = {},
 ): Promise<BackfillCounters & { projectCount: number }> {
   if (legacyGlobalDir) {
@@ -257,7 +257,7 @@ export function registerSyncMarkdownMemoriesCommand(
   dbManager: DatabaseManager,
   globalDir: string,
   projectsMemoryDir?: string,
-  agentRoot = getAgentRoot(),
+  agentRoot = AGENT_ROOT,
 ): void {
   pi.registerCommand('memory-sync-markdown', {
     description: 'Reconcile the SQLite search mirror with Markdown memories',

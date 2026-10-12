@@ -8,10 +8,11 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { DatabaseManager } from '../store/db.js';
 import { indexAllSessions, getSessionStats, retentionCutoffMs } from '../store/session-indexer.js';
 import type { MemoryConfig } from '../types.js';
+import { AGENT_ROOT } from '../paths.js';
 
+const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || path.join(AGENT_ROOT, 'sessions');
 
-export function registerIndexSessionsCommand(pi: ExtensionAPI, config: MemoryConfig, dbManager: DatabaseManager, sessionsDir: string): void {
-  const SESSIONS_DIR = sessionsDir;
+export function registerIndexSessionsCommand(pi: ExtensionAPI, config: MemoryConfig): void {
   pi.registerCommand("memory-index-sessions", {
     description: "Import past Pi sessions into the search database",
     handler: async (_args, ctx: ExtensionCommandContext) => {
@@ -34,6 +35,8 @@ export function registerIndexSessionsCommand(pi: ExtensionAPI, config: MemoryCon
 
         ctx.ui.notify(`📁 Found ${totalFiles} session files across ${projectDirs.length} projects\n⏳ Indexing...`, 'info');
 
+        const memoryDir = path.join(AGENT_ROOT, 'pi-hermes-memory');
+        const dbManager = new DatabaseManager(memoryDir);
 
         try {
           // Retention is honored here too: a manual reindex must not re-add the
@@ -78,7 +81,7 @@ export function registerIndexSessionsCommand(pi: ExtensionAPI, config: MemoryCon
 
           ctx.ui.notify(output, 'info');
         } finally {
-          // The owning runtime closes this shared database on shutdown.
+          dbManager.close();
         }
       } catch (err) {
         ctx.ui.notify(`❌ Session indexing failed: ${err instanceof Error ? err.message : String(err)}`, 'error');

@@ -1,17 +1,8 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_PROJECTS_MEMORY_DIR } from "./constants.js";
-import { hermesScope } from "./runtime-scope.js";
 
 export const AGENT_ROOT = resolveAgentRoot();
-
-export function getAgentRoot(): string {
-  return hermesScope.getStore()?.agentRoot ?? AGENT_ROOT;
-}
-
-export function getSessionsDir(): string {
-  return hermesScope.getStore()?.sessionsDir ?? path.join(AGENT_ROOT, "sessions");
-}
 
 export function resolveAgentRoot(env: Record<string, string | undefined> = process.env): string {
   const configured = env.PI_CODING_AGENT_DIR?.trim();
@@ -32,7 +23,7 @@ export function normalizeConfiguredMemoryDir(input: string): string | undefined 
 
   const expanded = expandHome(trimmed);
   if (path.isAbsolute(expanded)) return path.normalize(expanded);
-  return path.resolve(getAgentRoot(), expanded);
+  return path.resolve(AGENT_ROOT, expanded);
 }
 
 function isSafeRelativeDirectory(input: string): boolean {
@@ -49,7 +40,7 @@ export function normalizeProjectsMemoryDir(input: string): string | undefined {
 
   if (path.isAbsolute(expanded)) {
     const resolved = path.resolve(expanded);
-    const relativeToAgentRoot = path.relative(getAgentRoot(), resolved);
+    const relativeToAgentRoot = path.relative(AGENT_ROOT, resolved);
     if (
       relativeToAgentRoot === ""
       || relativeToAgentRoot.startsWith("..")
@@ -67,5 +58,5 @@ export function normalizeProjectsMemoryDir(input: string): string | undefined {
 
 export function resolveProjectsRoot(projectsMemoryDir = DEFAULT_PROJECTS_MEMORY_DIR): string {
   const normalized = normalizeProjectsMemoryDir(projectsMemoryDir) ?? DEFAULT_PROJECTS_MEMORY_DIR;
-  return path.join(getAgentRoot(), normalized);
+  return path.join(AGENT_ROOT, normalized);
 }

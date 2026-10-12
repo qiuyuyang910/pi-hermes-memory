@@ -217,10 +217,6 @@ export function setupSessionFlush(
           }
         }
 
-        if (usesDirectTransport(config)) {
-          notifyCompactFailure(ctx, kind, "direct completion failed; subprocess fallback is disabled");
-          return;
-        }
         const handoff = resolveFlushHandoff(Boolean(signal?.aborted), timeoutMs, now() - started);
         if ("skip" in handoff) {
           if (handoff.skip === "budget_exhausted") {

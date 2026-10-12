@@ -1,8 +1,8 @@
 # 合并 Hermes 上游更新
 
-`origin` 指向自己的 GitHub 仓库；`upstream` 指向原作者仓库。`master` 是可加载的角色插件，`hermes-upstream` 是未经角色适配的 vendor 源码基线。两者已经建立共同基线，后续通过三方合并保留角色改动。远程原有 `main` 不参与此流程。
+`origin` 指向自己的 GitHub 仓库；`upstream` 指向原作者仓库。`roles-hermes` 是可加载的角色插件，`hermes-upstream` 是未经角色适配的 vendor 源码基线。两者已经建立共同基线，后续通过三方合并保留角色改动。远程原有 `main`、`master` 不参与此流程。
 
-当前上游引用、提交号与包版本记录在 `UPSTREAM.md`。`UPSTREAM-FILES.sha256` 记录原版基线，`vendor/hermes/` 在 `master` 上包含适配改动。维护分支中仍会保留插件外围文件，但 vendor 部分未适配，不要加载该分支。
+当前上游引用、提交号与包版本记录在 `UPSTREAM.md`。`UPSTREAM-FILES.sha256` 记录原版基线，`vendor/hermes/` 在 `roles-hermes` 上包含适配改动。维护分支中仍会保留插件外围文件，但 vendor 部分未适配，不要加载该分支。
 
 重新克隆自己的仓库后，Git 不会带入本机的 upstream 远程配置。首次更新前执行一次：
 
@@ -37,8 +37,8 @@ git -c http.proxy=http://127.0.0.1:10808 fetch upstream --tags
 ## 合入角色插件
 
 ```powershell
-git switch master
-git pull --ff-only origin master
+git switch roles-hermes
+git pull --ff-only origin roles-hermes
 git switch -c update/hermes-X.Y.Z
 git merge hermes-upstream
 ```
@@ -52,7 +52,7 @@ git merge hermes-upstream
 - 根据上游包清单变化评估根 `package.json` 的运行时依赖和 Pi 主机接口，更新 `SOURCE.md` 的来源说明。
 - 按项目约定完成允许的静态核查；运行验收由用户执行，覆盖 README 中的隔离、切换和失败场景。
 
-确认升级可用后，将升级分支推送到自己的仓库，通过 PR 合入 `master`：
+确认升级可用后，将升级分支推送到自己的仓库，通过 PR 合入 `roles-hermes`：
 
 ```powershell
 git push -u origin update/hermes-X.Y.Z

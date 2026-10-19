@@ -4,6 +4,8 @@ export interface HermesScope {
   agentRoot: string;
   sessionsDir: string;
   isolated: boolean;
+  role: string | null;
+  suppressAutomation?: boolean;
   closers?: Map<string, () => void>;
 }
 

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import installHermes from "../vendor/hermes/src/index.js";
 import type { MemoryConfig } from "../vendor/hermes/src/types.js";
 import { hermesScope, type HermesScope } from "../vendor/hermes/src/runtime-scope.js";
+import { validateSessionClear, type SessionClearRequest, type SessionClearTask } from "../vendor/hermes/src/store/session-clear.js";
 
 type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -15,6 +16,7 @@ export function createHermesRuntime(pi: ExtensionAPI, scope: HermesScope, config
   const pending = new Set<Promise<unknown>>();
   let closing = false;
   let closePromise: Promise<void> | undefined;
+  let clearTask: SessionClearTask | undefined;
 
   const api = {
     ...pi,
@@ -27,7 +29,7 @@ export function createHermesRuntime(pi: ExtensionAPI, scope: HermesScope, config
       return () => { const index = list.indexOf(handler); if (index >= 0) list.splice(index, 1); };
     },
   } as ExtensionAPI;
-  hermesScope.run(scope, () => installHermes(api, config));
+  const controls = hermesScope.run(scope, () => installHermes(api, config, () => clearTask));
 
   function run<T>(work: () => Promise<T> | T): Promise<T> {
     if (closing) return Promise.reject(new Error("Hermes runtime is closed"));
@@ -38,6 +40,7 @@ export function createHermesRuntime(pi: ExtensionAPI, scope: HermesScope, config
   }
 
   async function emit(event: string, data: any, ctx: ExtensionContext) {
+    if (scope.suppressAutomation && !["session_start", "session_shutdown"].includes(event)) return;
     let result: any;
     for (const handler of handlers.get(event) ?? []) {
       const next = await handler(data, ctx);
@@ -48,6 +51,19 @@ export function createHermesRuntime(pi: ExtensionAPI, scope: HermesScope, config
 
   return {
     tools, commands, events: [...handlers.keys()], scope,
+    scheduleClear(request: SessionClearRequest): SessionClearTask {
+      if (closing || clearTask) throw new Error("Session clearing is already in progress");
+      validateSessionClear(request);
+      clearTask = { request, state: "scheduled" };
+      return clearTask;
+    },
+    cancelClear(): void {
+      if (closing) throw new Error("Cannot cancel session clearing after shutdown");
+      clearTask = undefined;
+    },
+    clearStatus(sessionId: string) {
+      return run(() => controls.clearStatus(sessionId));
+    },
     dispatch(event: string, data: any, ctx: ExtensionContext) {
       return run(() => emit(event, data, ctx));
     },
@@ -65,9 +81,10 @@ export function createHermesRuntime(pi: ExtensionAPI, scope: HermesScope, config
         return command.handler(...args);
       });
     },
-    close(data: any, ctx: ExtensionContext): Promise<void> {
+    close(data: any, ctx: ExtensionContext, options?: { skipFlush?: boolean }): Promise<void> {
       closePromise ??= hermesScope.run(scope, async () => {
         closing = true;
+        if (clearTask || options?.skipFlush) config.flushOnShutdown = false;
         await Promise.allSettled([...pending]);
         const errors: unknown[] = [];
         // Always reach the final database close, even when an earlier flush fails.

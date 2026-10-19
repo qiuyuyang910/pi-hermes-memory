@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { resolveProjectsRoot } from "./paths.js";
-import { createHash } from "node:crypto";
+import { projectId } from "./store/session-ownership.js";
 
 export interface ProjectInfo {
   /** Canonical path hash for active project storage, or null outside a project. */
@@ -115,8 +115,7 @@ export function detectProject(projectsMemoryDir = "projects-memory", cwd?: strin
   }
 
   const projectsRoot = resolveProjectsRoot(projectsMemoryDir);
-  const normalized = process.platform === "win32" ? fs.realpathSync.native(resolved).toLowerCase() : fs.realpathSync(resolved);
-  const name = createHash("sha256").update(normalized).digest("hex");
+  const name = projectId(resolved);
 
   return {
     name,

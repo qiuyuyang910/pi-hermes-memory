@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { sessionFileBelongsToScope } from './session-ownership.js';
 
 /**
  * Parsed session data from a JSONL file.
@@ -97,6 +98,7 @@ function extractToolCalls(content: unknown): string[] | undefined {
  * @returns Parsed session data, or null if the file is invalid
  */
 export function parseSessionFile(filePath: string): ParsedSession | null {
+  if (!sessionFileBelongsToScope(filePath)) return null;
   const content = fs.readFileSync(filePath, 'utf-8');
   const lines = content.split('\n').filter(line => line.trim());
 
@@ -176,7 +178,7 @@ export function getSessionFiles(sessionsDir: string, projectDir?: string): strin
     if (!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir)
       .filter(f => f.endsWith('.jsonl'))
-      .map(f => path.join(dir, f));
+      .map(f => path.join(dir, f)).filter(file => sessionFileBelongsToScope(file));
   }
 
   // All projects
@@ -197,7 +199,7 @@ export function getSessionFiles(sessionsDir: string, projectDir?: string): strin
       files.push(entryPath);
     }
   }
-  return files;
+  return files.filter(file => sessionFileBelongsToScope(file));
 }
 
 /**

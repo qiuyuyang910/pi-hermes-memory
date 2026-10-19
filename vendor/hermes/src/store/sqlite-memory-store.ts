@@ -4,6 +4,7 @@ import {
   buildFallbackFts5Query,
   buildNaturalLanguageFallbackQuery,
   collectLikeTerms,
+  hasExplicitFts5Operator,
   isFts5QueryError,
   normalizeFts5Query,
   normalizeNaturalLanguageFts5Query,
@@ -627,7 +628,7 @@ export function reconcileMarkdownMemoryScope(
   }
 }
 
-function failureProject(rawEntry: string): string | null {
+export function failureProject(rawEntry: string): string | null {
   return parseMetadataComment(rawEntry).project;
 }
 
@@ -958,10 +959,8 @@ export function searchMemories(
     return rows.map(mapRow);
   };
 
-  // Every term a stop word or connector leaves FTS5 nothing to match.
-  // Degrade to a scoped literal substring search (OR over the raw terms) —
-  // the same fallback session search uses for this case — instead of a hard
-  // [].
+  // Literal matching also recovers multi-term queries made of short CJK words
+  // that the trigram index cannot match. Keep the same scope and result limit.
   const runLiteralLikeFallback = (): SqliteMemoryEntry[] => {
     const terms = collectLikeTerms(query);
     if (terms.length === 0) return [];
@@ -1043,11 +1042,11 @@ export function searchMemories(
   }
 
   const fallbackQuery = buildFallbackFts5Query(query);
-  if (!fallbackQuery || fallbackQuery === normalizedQuery) {
-    return exactResults;
+  if (fallbackQuery && fallbackQuery !== normalizedQuery) {
+    const fallbackResults = runSearch(fallbackQuery);
+    if (fallbackResults.length > 0) return fallbackResults;
   }
-
-  return runSearch(fallbackQuery);
+  return hasExplicitFts5Operator(query) ? exactResults : runLiteralLikeFallback();
 }
 
 /**

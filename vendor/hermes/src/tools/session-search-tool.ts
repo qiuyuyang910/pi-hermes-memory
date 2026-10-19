@@ -8,6 +8,7 @@ import { searchSessionAnchors } from '../store/session-anchor-search.js';
 import type { SessionAnchorRange, SessionAnchorSearchResult } from '../store/session-anchor-search.js';
 import type { SessionSearchConfig } from '../types.js';
 import { getSessionsDir } from '../paths.js';
+import { isSessionCleared } from '../store/session-clear.js';
 import { createSharedToolResultRenderer } from './shared-output-view.js';
 import { searchResultView } from './tool-result-views.js';
 
@@ -55,14 +56,14 @@ export function registerSessionSearchTool(
   options: SessionSearchToolOptions = {},
 ): void {
   if (sessionSearchConfig.variant === 'anchors') {
-    registerAnchorSessionSearchTool(pi, options.sessionsDir ?? getSessionsDir());
+    registerAnchorSessionSearchTool(pi, options.sessionsDir ?? getSessionsDir(), dbManager);
     return;
   }
 
   registerLegacySessionSearchTool(pi, dbManager);
 }
 
-function registerAnchorSessionSearchTool(pi: ExtensionAPI, sessionsDir: string): void {
+function registerAnchorSessionSearchTool(pi: ExtensionAPI, sessionsDir: string, dbManager: DatabaseManager): void {
   pi.registerTool({
     name: 'session_search',
     label: 'Session Search',
@@ -103,7 +104,8 @@ exclude:
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
       }
 
-      const searchResult = searchSessionAnchors(markdown, { sessionsDir });
+      const searchResult = searchSessionAnchors(markdown, { sessionsDir,
+        isSessionExcluded: sessionId => isSessionCleared(dbManager, sessionId) });
       if (!searchResult.success) {
         const result: SearchResult = { success: false, message: searchResult.message ?? 'Anchor session search failed.' };
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };

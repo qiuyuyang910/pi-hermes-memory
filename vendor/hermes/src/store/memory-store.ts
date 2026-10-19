@@ -39,6 +39,12 @@ import { getAgentRoot } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
+export interface MemoryAddition {
+  target: "memory" | "user" | "failure";
+  storagePath: string;
+  entries: string[];
+  indexWarning?: string | null;
+}
 const RECOVERY_ACTIVE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_SNAPSHOT_MIN_INTERVAL_MS = 60 * 60 * 1000;
 const RECOVERY_MAX_COUNT = 32;
@@ -63,6 +69,7 @@ export class MemoryStore {
   private consolidator: ((target: "memory" | "user" | "failure", signal?: AbortSignal) => Promise<ConsolidationResult>) | null = null;
   private overflowSince: Partial<Record<"memory" | "user" | "failure", number>> = {};
   private mutationObserver: ((target: "memory" | "user" | "failure", entries: string[]) => Promise<string | null | undefined>) | null = null;
+  private additionObserver: ((addition: MemoryAddition) => Promise<string | null>) | null = null;
 
   constructor(private config: MemoryConfig) {}
 
@@ -78,6 +85,10 @@ export class MemoryStore {
     fn: (target: "memory" | "user" | "failure", entries: string[]) => Promise<string | null | undefined>,
   ): void {
     this.mutationObserver = fn;
+  }
+
+  setAdditionObserver(fn: (addition: MemoryAddition) => Promise<string | null>): void {
+    this.additionObserver = fn;
   }
 
   // ─── Path helpers ───
@@ -243,7 +254,7 @@ export class MemoryStore {
     signal: AbortSignal | undefined,
     addedMessage: string,
     project: string | undefined,
-    markMutation: () => void,
+    markMutation: (addedEntries?: string[]) => void,
   ): Promise<MemoryResult> {
     content = content.trim();
     if (!content) return { success: false, error: "Content cannot be empty." };
@@ -277,7 +288,7 @@ export class MemoryStore {
 
       if (strategy === "fifo-evict") {
         const result = await this.fifoEvictAndAdd(target, entries, encoded, content.length, limit);
-        if (result.success) markMutation();
+        if (result.success) markMutation([encoded]);
         return result;
       }
 
@@ -287,7 +298,7 @@ export class MemoryStore {
     entries.push(encoded);
     this.setEntries(target, entries);
     await this.saveToDisk(target);
-    markMutation();
+    markMutation([encoded]);
 
     return this.successResponse(target, addedMessage);
   }
@@ -415,6 +426,7 @@ export class MemoryStore {
 
       const originalEntries = [...this.entriesFor(target)];
       let plannedEntries = [...originalEntries];
+      const addedEntries: string[] = [];
       const today = new Date().toISOString().split("T")[0];
 
       for (const operation of operations) {
@@ -438,7 +450,12 @@ export class MemoryStore {
           })) {
             return { success: false, error: "Memory mutation plan would add a duplicate entry." };
           }
-          plannedEntries.push(this.encodeEntry(normalizedContent, today, today, operation.project));
+          const encoded = this.encodeEntry(normalizedContent, today, today, operation.project);
+          plannedEntries.push(encoded);
+          if (!originalEntries.some(entry => {
+            const decoded = this.decodeEntry(entry);
+            return decoded.text === normalizedContent && (target !== "failure" || decoded.project === normalizedProject);
+          })) addedEntries.push(encoded);
           continue;
         }
 
@@ -486,7 +503,7 @@ export class MemoryStore {
 
       this.setEntries(target, plannedEntries);
       await this.saveToDisk(target);
-      markMutation();
+      markMutation(options.requireShrink ? undefined : addedEntries.filter(entry => plannedEntries.includes(entry)));
       return this.successResponse(target, `Applied ${operations.length} memory operations atomically.`);
     }, options.signal);
   }
@@ -849,6 +866,7 @@ export class MemoryStore {
     target: "memory" | "user" | "failure",
     storagePath: string,
     result: MemoryResult,
+    addedEntries: string[] = [],
   ): Promise<MemoryResult> {
     const state = await this.readFileState(storagePath);
     this.setEntries(target, [...new Set(state.entries)]);
@@ -866,12 +884,26 @@ export class MemoryStore {
       if (result.entries) finalized.entries = result.entries;
     }
 
-    if (!this.mutationObserver) return finalized;
-
-    const warning = await this.mutationObserver(target, [...state.entries]);
-    if (!warning || !finalized.success) return finalized;
-
-    const warnings = [...(finalized.warnings ?? []), warning];
+    let indexWarning: string | null | undefined;
+    try {
+      indexWarning = await this.mutationObserver?.(target, [...state.entries]);
+    } catch (error) {
+      indexWarning = `Saved to Markdown, but SQLite search reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    let logWarning: string | null = null;
+    const confirmedAdditions = [...new Set(addedEntries)].filter(entry => state.entries.includes(entry));
+    if (finalized.success && confirmedAdditions.length && this.additionObserver) {
+      try {
+        logWarning = await this.additionObserver({ target, storagePath, entries: confirmedAdditions, indexWarning });
+      } catch (error) {
+        logWarning = `记忆已保存，日志写入失败：${error instanceof Error ? error.message : String(error)}`;
+        console.warn(logWarning);
+      }
+    }
+    const newWarnings = [indexWarning, logWarning].filter((value): value is string => Boolean(value));
+    if (!finalized.success || !newWarnings.length) return finalized;
+    const warning = newWarnings.join("; ");
+    const warnings = [...(finalized.warnings ?? []), ...newWarnings];
     return {
       ...finalized,
       message: finalized.message ? `${finalized.message} Warning: ${warning}` : warning,
@@ -882,19 +914,22 @@ export class MemoryStore {
 
   private async runTargetMutation(
     target: "memory" | "user" | "failure",
-    mutation: (markMutation: () => void) => Promise<MemoryResult>,
+    mutation: (markMutation: (addedEntries?: string[]) => void) => Promise<MemoryResult>,
     signal?: AbortSignal,
   ): Promise<MemoryResult> {
     const storagePath = await this.resolveStoragePath(target);
     return withMarkdownMutationLock(storagePath, async () => {
+      // Keep receipts across external-write retries, but only log entries confirmed on final success.
+      const addedEntries = new Set<string>();
       for (let attempt = 0; ; attempt++) {
         if (signal?.aborted) {
           return { success: false, error: "Memory mutation cancelled." };
         }
         let mutated = false;
         try {
-          const result = await mutation(() => {
+          const result = await mutation((added = []) => {
             mutated = true;
+            for (const entry of added) addedEntries.add(entry);
           });
           if (result.success) {
             // saveToDisk stamps fileFingerprints on success. If an editor
@@ -911,7 +946,7 @@ export class MemoryStore {
             }
           }
           if (result.success && mutated) this.clearOverflow(target);
-          return await this.finalizeTargetMutation(target, storagePath, result);
+          return await this.finalizeTargetMutation(target, storagePath, result, [...addedEntries]);
         } catch (error) {
           delete this.fileFingerprints[storagePath];
           const state = await this.readFileState(storagePath);

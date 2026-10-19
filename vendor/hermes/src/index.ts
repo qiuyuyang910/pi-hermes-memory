@@ -26,6 +26,8 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "./store/memory-store.js";
+import { createMemoryAdditionLogger } from "./store/memory-addition-log.js";
+import { hermesScope } from "./runtime-scope.js";
 import { SkillStore } from "./store/skill-store.js";
 import { DatabaseManager } from "./store/db.js";
 import { indexSession, upsertSessionFileMetadata, pruneEphemeralReviewSessions, pruneOldSessions, retentionCutoffMs } from "./store/session-indexer.js";
@@ -33,6 +35,7 @@ import { runRecoveryMaintenance } from "./store/recovery-maintenance.js";
 import { scheduleSessionBackfill, joinSessionBackfill, type SessionBackfillState } from "./handlers/session-backfill.js";
 import { scheduleLiveSessionIndex } from "./handlers/session-live-index.js";
 import { parseSessionFile } from "./store/session-parser.js";
+import { pruneForeignSessionHistory } from "./store/session-ownership.js";
 import { registerMemoryTool } from "./tools/memory-tool.js";
 import { registerSkillTool } from "./tools/skill-tool.js";
 import { registerSessionSearchTool } from "./tools/session-search-tool.js";
@@ -61,6 +64,7 @@ import type { MemoryConfig } from "./types.js";
 import { isDatabaseMigrationPending } from "./extension-root-migration.js";
 import { measureLifecycle, measureLifecycleSync } from "./lifecycle-timing.js";
 import { createMemoryInitializer, withMemoryInitialization, type EnsureMemoryReady } from "./memory-initialization.js";
+import { clearSessionHistory, isSessionCleared, resumePendingSessionClears, sessionClearStatus, type SessionClearTask } from "./store/session-clear.js";
 
 export function resolveProjectSkillDiscovery(
   skillStore: SkillStore,
@@ -89,7 +93,7 @@ export function registerProjectSkillDiscoveryHandler(
   });
 }
 
-export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
+export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig, getClearTask?: () => SessionClearTask | undefined) {
   const config = suppliedConfig ?? loadConfig();
   const lazy = config.lazyInitialization === true && config.memoryMode === "policy-only";
   let sessionContext: ExtensionContext | undefined;
@@ -124,6 +128,9 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
     migrationSentinelPath: path.join(globalDir, ".skills-migrated-to-extension-storage"),
   });
   const dbManager = new DatabaseManager(globalDir);
+  let additionContext: { sessionId: string | null; projectPath: string | null } = { sessionId: null, projectPath: null };
+  const logAddition = createMemoryAdditionLogger(globalDir, dbManager, hermesScope.getStore()?.role ?? null, () => additionContext);
+  store.setAdditionObserver(addition => logAddition(addition));
   let databaseClosed = false;
   const backfillState: SessionBackfillState = { inProgress: false, promise: null };
   dbManager.setQuickCheckOnOpen(config.quickCheckOnOpen ?? true);
@@ -154,11 +161,13 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
   // Bound from session/tool ctx.cwd, never from factory process.cwd().
   const createProjectStore = (projectInfo: ReturnType<typeof detectProject>): MemoryStore | null => {
     if (!projectInfo.memoryDir) return null;
-    return new MemoryStore({
+    const candidate = new MemoryStore({
       ...config,
       memoryCharLimit: config.projectCharLimit,
       memoryDir: projectInfo.memoryDir,
     });
+    candidate.setAdditionObserver(addition => logAddition(addition, projectInfo.name ?? null, true));
+    return candidate;
   };
   let projectMemoryDir: string | null = null;
   let projectStore: MemoryStore | null = null;
@@ -195,6 +204,8 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
     : null;
 
   const initialization = createMemoryInitializer(async (ctx) => {
+    resumePendingSessionClears(dbManager);
+    pruneForeignSessionHistory(dbManager);
     const timingPrefix = lazy ? "memory-init" : "session-start";
     // Existing stores are read in place; this adapter does not migrate them.
     if (!persistenceInitialized) {
@@ -293,9 +304,13 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
   // Skills and pinned instructions must be available even without a lookup.
   pi.on("session_start", async (_event, ctx) => {
     sessionContext = ctx;
+    additionContext = { sessionId: ctx.sessionManager.getSessionId() || null, projectPath: ctx.cwd || null };
     // Pinned directives must not depend on migration/SQLite being healthy.
     if (standingStore) await standingStore.load();
     if (!lazy) await ensureMemoryReady(ctx);
+    if (isSessionCleared(dbManager, ctx.sessionManager.getSessionId())) {
+      throw new Error("This session has been cleared; open a new session");
+    }
     refreshSkillProjectContext(ctx.cwd);
     // Generated skills remain in their existing instance-owned directories.
     await skillStore.ensureDiscoveredRoots();
@@ -430,6 +445,25 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
   // close() and silently no-op.
   pi.on("session_shutdown", async (_event, ctx) => {
     await initialization.close();
+    const clearTask = getClearTask?.();
+    if (clearTask) {
+      try {
+        if (clearTask.request.sessionId !== ctx.sessionManager.getSessionId()) {
+          throw new Error("The session scheduled for clearing is no longer current");
+        }
+        await Promise.all([joinSessionBackfill(backfillState), liveIndexState.promise]);
+        clearSessionHistory(dbManager, clearTask.request);
+        clearTask.state = "cleared";
+      } catch (error) {
+        clearTask.state = "failed";
+        clearTask.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        databaseClosed = true;
+        dbManager.close();
+      }
+      return;
+    }
     if (lazy && !initialization.isReady()) {
       databaseClosed = true;
       dbManager.close();
@@ -469,4 +503,5 @@ export default function (pi: ExtensionAPI, suppliedConfig?: MemoryConfig) {
       } catch { /* best effort — never block shutdown */ }
     }
   });
+  return { clearStatus: (sessionId: string) => sessionClearStatus(dbManager, sessionId) };
 }

@@ -1,4 +1,6 @@
 import { DatabaseManager } from './db.js';
+import { SESSION_CLEAR_PREFIX } from './session-clear.js';
+import { pruneForeignSessionHistory } from './session-ownership.js';
 import {
   buildFallbackFts5Query,
   buildNaturalLanguageFallbackQuery,
@@ -78,14 +80,15 @@ export function searchSessions(
     return [];
   }
 
+  pruneForeignSessionHistory(dbManager);
   const db = dbManager.getDb();
   const { limit = 10, project, role, since } = options;
 
   let ftsParseError = false;
 
   const executeSearch = (match: SearchMatch): SessionSearchResult[] => {
-    const conditions: string[] = [];
-    const params: unknown[] = [];
+    const conditions: string[] = ['NOT EXISTS (SELECT 1 FROM extension_metadata WHERE key = ? || m.session_id)'];
+    const params: unknown[] = [SESSION_CLEAR_PREFIX];
 
     if (match.type === 'fts') {
       // FTS5 match condition — use subquery for reliable rowid matching
@@ -214,7 +217,9 @@ export function searchSessions(
  * Get the total number of indexed messages.
  */
 export function getIndexedMessageCount(dbManager: DatabaseManager): number {
+  pruneForeignSessionHistory(dbManager);
   const db = dbManager.getDb();
-  const result = db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number };
+  const result = db.prepare('SELECT COUNT(*) as count FROM messages m WHERE NOT EXISTS (SELECT 1 FROM extension_metadata WHERE key = ? || m.session_id)')
+    .get(SESSION_CLEAR_PREFIX) as { count: number };
   return result.count;
 }

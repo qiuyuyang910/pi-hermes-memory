@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { sessionFileBelongsToScope } from './session-ownership.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -28,6 +29,7 @@ export interface SessionAnchorSearchResult {
 
 export interface SessionAnchorSearchOptions {
   sessionsDir?: string;
+  isSessionExcluded?: (sessionId: string) => boolean;
   maxFiles?: number;
   maxLines?: number;
 }
@@ -86,7 +88,7 @@ export function searchSessionAnchors(
     return { success: false, ranges: [], message: `sessionsDir does not exist: ${options.sessionsDir}` };
   }
 
-  const files = findJsonlFiles(options.sessionsDir).sort();
+  const files = findJsonlFiles(options.sessionsDir).filter(file => sessionFileBelongsToScope(file)).sort();
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
   if (files.length > maxFiles) {
@@ -102,7 +104,7 @@ export function searchSessionAnchors(
 
   for (const file of files) {
     const remainingLines = maxLines - scannedLines;
-    const fileResult = searchJsonlFile(file, parsed.request, remainingLines, scannedLines, maxLines);
+    const fileResult = searchJsonlFile(file, parsed.request, remainingLines, scannedLines, maxLines, options.isSessionExcluded);
     if (!fileResult.success) {
       return { success: false, ranges: [], message: fileResult.message };
     }
@@ -110,7 +112,8 @@ export function searchSessionAnchors(
     ranges.push(...fileResult.ranges);
   }
 
-  const filtered = ranges.filter((range) => !containsAny(range.text, parsed.request.exclude));
+  const filtered = ranges.filter((range) => !containsAny(range.text, parsed.request.exclude)
+    && !(range.sessionId && options.isSessionExcluded?.(range.sessionId)));
   const sorted = sortRanges(filtered, parsed.request.hasTextConstraint);
   const limited = sorted.slice(0, parsed.request.limit).map(({ text: _text, ...range }) => range);
 
@@ -267,6 +270,7 @@ function searchJsonlFile(
   maxLines: number,
   scannedBefore: number,
   scanCap: number,
+  isSessionExcluded?: (sessionId: string) => boolean,
 ): { success: true; ranges: PendingRange[]; scannedLines: number } | { success: false; message: string } {
   const content = fs.readFileSync(filePath, "utf-8");
   const lines = content.split(/\r?\n/);
@@ -295,7 +299,11 @@ function searchJsonlFile(
       return { success: false, message: `Invalid JSON in ${filePath}:${index + 1}` };
     }
 
-    const sessionId = getSessionId(event) ?? currentSessionId;
+    const eventSessionId = getSessionId(event);
+    const sessionId = eventSessionId ?? currentSessionId;
+    if (eventSessionId && isSessionExcluded?.(eventSessionId)) {
+      return { success: true, ranges: [], scannedLines };
+    }
     if (sessionId) currentSessionId = sessionId;
 
     const cwd = getCwd(event) ?? currentCwd;

@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import { DEFAULT_MAX_MESSAGE_CONTENT_LENGTH } from '../constants.js';
 import { DatabaseManager } from './db.js';
 import { parseSessionFile, getSessionFiles, type ParsedSession } from './session-parser.js';
+import { isSessionCleared, SESSION_CLEAR_PREFIX } from './session-clear.js';
+import { sessionBelongsToScope, sessionFileBelongsToScope } from './session-ownership.js';
 
 export const LAST_SESSION_BACKFILL_KEY = 'last_session_backfill';
 export const SESSION_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -84,18 +86,24 @@ export function indexSession(dbManager: DatabaseManager, session: ParsedSession)
 
 function indexSessionOnce(dbManager: DatabaseManager, session: ParsedSession): IndexResult {
   const db = dbManager.getDb();
+  if (isSessionCleared(dbManager, session.id)) {
+    return { sessionId: session.id, messagesIndexed: 0, skipped: true };
+  }
+  const clearKey = SESSION_CLEAR_PREFIX + session.id;
 
   const existingSession = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id) as { id: string } | undefined;
   const before = db.prepare('SELECT COUNT(*) as count FROM messages WHERE session_id = ?').get(session.id) as { count: number };
 
   const insertSession = db.prepare(`
     INSERT OR IGNORE INTO sessions (id, project, cwd, started_at, ended_at, message_count)
-    VALUES (?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM extension_metadata WHERE key = ?)
   `);
 
   const insertMsg = db.prepare(`
     INSERT OR IGNORE INTO messages (id, session_id, role, content, timestamp, tool_calls)
-    VALUES (?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM extension_metadata WHERE key = ?)
   `);
 
   const updateSession = db.prepare(`
@@ -114,7 +122,8 @@ function indexSessionOnce(dbManager: DatabaseManager, session: ParsedSession): I
       session.cwd,
       session.startedAt,
       session.endedAt,
-      session.messages.length
+      session.messages.length,
+      clearKey
     );
 
     for (const msg of session.messages) {
@@ -124,7 +133,8 @@ function indexSessionOnce(dbManager: DatabaseManager, session: ParsedSession): I
         msg.role,
         truncateMessageContent(msg.content),
         msg.timestamp,
-        msg.toolCalls ? JSON.stringify(msg.toolCalls) : null
+        msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+        clearKey
       );
     }
 
@@ -141,7 +151,7 @@ function indexSessionOnce(dbManager: DatabaseManager, session: ParsedSession): I
   const after = db.prepare('SELECT COUNT(*) as count FROM messages WHERE session_id = ?').get(session.id) as { count: number };
   const messagesIndexed = after.count - before.count;
 
-  return { sessionId: session.id, messagesIndexed, skipped: Boolean(existingSession) && messagesIndexed === 0 };
+  return { sessionId: session.id, messagesIndexed, skipped: isSessionCleared(dbManager, session.id) || (Boolean(existingSession) && messagesIndexed === 0) };
 }
 
 type SessionManagerSnapshot = {
@@ -221,6 +231,7 @@ function parseMessageEntry(entry: unknown): ParsedSession['messages'][number] | 
 export function parseSessionManagerSnapshot(sessionManager: SessionManagerSnapshot): ParsedSession | null {
   const header = sessionManager.getHeader();
   if (!header?.id || !header.cwd || !header.timestamp) return null;
+  if (!sessionBelongsToScope(sessionManager.getEntries(), header.cwd)) return null;
 
   const messages = sessionManager.getEntries()
     .map(parseMessageEntry)
@@ -318,15 +329,17 @@ export function upsertSessionFileMetadata(
   indexedAt = new Date(),
 ): void {
   const db = dbManager.getDb();
+  if (isSessionCleared(dbManager, sessionId) || !sessionFileBelongsToScope(filePath, sessionId)) return;
   db.prepare(`
     INSERT INTO session_files (path, session_id, size, mtime_ms, indexed_at)
-    VALUES (?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM extension_metadata WHERE key = ?)
     ON CONFLICT(path) DO UPDATE SET
       session_id = excluded.session_id,
       size = excluded.size,
       mtime_ms = excluded.mtime_ms,
       indexed_at = excluded.indexed_at
-  `).run(metadata.path, sessionId, metadata.size, metadata.mtimeMs, indexedAt.toISOString());
+  `).run(metadata.path, sessionId, metadata.size, metadata.mtimeMs, indexedAt.toISOString(), SESSION_CLEAR_PREFIX + sessionId);
 }
 
 function emptyBulkIndexResult(): BulkIndexResult {

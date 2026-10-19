@@ -15,7 +15,7 @@ export interface Role {
 }
 
 export function validRoleId(id: string): boolean {
-  return id.length > 0 && id.length <= 64 && !["off", "list", "current", "reload"].includes(id)
+  return id.length > 0 && id.length <= 64 && !["off", "list", "current", "prompt", "reload", "clear"].includes(id)
     && [...id].every(c => "abcdefghijklmnopqrstuvwxyz0123456789_-".includes(c));
 }
 

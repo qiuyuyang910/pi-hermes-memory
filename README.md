@@ -1,6 +1,6 @@
 # Pi 角色与 Hermes 独立记忆
 
-面向 Pi 1.0.2 的本地扩展，基于 pi-hermes-memory 0.9.10 的 MIT 源码适配。入口为 `src/index.ts`。普通模式使用现有 Hermes 配置与数据；每个角色拥有独立的 Hermes 存储。会话统一保存在 Pi 默认目录，历史索引和查询按角色归属隔离。
+面向 Pi 1.0.2 的本地扩展，基于 pi-hermes-memory 0.9.11 的 MIT 源码适配。入口为 `src/index.ts`。普通模式使用现有 Hermes 配置与数据；每个角色拥有独立的 Hermes 存储。会话统一保存在 Pi 默认目录，历史索引和查询按角色归属隔离。
 
 ## 加载
 

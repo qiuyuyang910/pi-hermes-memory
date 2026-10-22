@@ -2,12 +2,13 @@
  * Parse and apply structured memory operations from direct background review.
  */
 
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { completeSimple, type Message, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../store/memory-store.js";
 import type { DatabaseManager } from "../store/db.js";
 import type { MemoryCategory, MemoryConfig, MemoryResult, ThinkingLevel } from "../types.js";
+import { createDirectReviewLogger } from "./direct-review-log.js";
 
 export interface ReviewMemoryOperation {
   action: "add" | "replace" | "remove";
@@ -737,6 +738,22 @@ function notifyThinkingChannelProvider(
   );
 }
 
+/** `ModelRegistry.streamSimple` as hosts >= 0.86.0 expose it (earendil-works/pi#8964).
+ * Older hosts, and the pinned dev dependency, type the registry without it. */
+type RegistryStreamSimple = (
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions,
+) => { result(): Promise<AssistantMessage> };
+
+/** Hosts before 0.86.0 cannot stream through the model registry, so the global
+ * completion cannot resolve extension-registered providers. The raw error names
+ * an api id; this tells the user what to do about it. */
+function withHostUpgradeHint(message: string, hostCanStream: boolean): string {
+  if (hostCanStream || !/No API provider registered for api/i.test(message)) return message;
+  return `${message} (this provider is registered by an extension; upgrade Pi to 0.86.0 or later so direct memory completions can use it)`;
+}
+
 export async function runDirectMemoryCompletion(
   ctx: DirectReviewContext,
   store: MemoryStore,
@@ -752,18 +769,32 @@ export async function runDirectMemoryCompletion(
     providerNoticeState?: { logged: boolean };
   } = {},
 ): Promise<DirectReviewResult> {
-  const complete = deps.completeSimple ?? completeSimple;
+  // Extension-registered providers (kiro, antigravity, ...) live in the session's
+  // model runtime, not in pi-ai's global api registry, so route through the
+  // registry when it can stream and keep the global call as the fallback.
+  // Older hosts type `ModelRegistry` without `streamSimple`, hence the structural cast.
+  const registry = ctx.modelRegistry as unknown as { streamSimple?: RegistryStreamSimple } | undefined;
+  const hostCanStream = typeof registry?.streamSimple === "function";
+  const complete: typeof completeSimple = deps.completeSimple
+    ?? (typeof registry?.streamSimple === "function"
+      ? (model, context, options) => registry.streamSimple!(model, context, options).result()
+      : completeSimple);
   const aborted = (): DirectReviewResult => ({ ok: false, appliedCount: 0, fallbackReason: "aborted" });
   if (options.signal?.aborted) return aborted();
 
+  const sessionId = readSessionId(ctx.sessionManager);
+  const log = createDirectReviewLogger(store, sessionId, projectName ?? null);
   const models = resolveReviewModels(ctx.model, ctx.modelRegistry, options.config);
+  await log.write("start", {
+    models: models.map((model) => ({ provider: model.provider, model: model.id })),
+    thinking: effectiveThinkingOverride(options.config) ?? null,
+    timeoutMs: options.timeoutMs ?? REVIEW_COMPLETION_TIMEOUT_MS,
+    expectedTarget: options.expectedTarget ?? null,
+  });
   if (models.length === 0) {
+    await log.write("no_model");
     return { ok: false, appliedCount: 0, fallbackReason: "no_model" };
   }
-
-  // One id per completion, reused across the chain: the whole chain is a single
-  // job for a single conversation.
-  const sessionId = readSessionId(ctx.sessionManager);
 
   // Try each model in chain: primary + llmFallbackModels. Only retry on
   // provider/auth/transport failures; parse errors are prompt-specific so we
@@ -784,6 +815,7 @@ export async function runDirectMemoryCompletion(
         fallbackReason: "no_auth",
         error: auth.ok ? `No request authentication for ${model.provider}` : auth.error,
       };
+      await log.write("no_auth", { attempt: mi + 1, provider: model.provider, model: model.id });
       if (mi < models.length - 1) continue;
       return lastResult;
     }
@@ -807,14 +839,30 @@ export async function runDirectMemoryCompletion(
 
     const request = { systemPrompt: options.systemPrompt, messages: [userMessage] };
 
+    let requestNumber = 0;
     const completeOnce = async () => {
+      requestNumber++;
+      await log.write("request", { attempt: mi + 1, requestNumber, provider: model.provider, model: model.id });
       const response = await complete(
         model,
         request,
         buildDirectReviewCompletionOptions(model, requestAuth, thinking, controller.signal, sessionId),
       );
-      if (response.stopReason === "error" && isAuthRejection(response.errorMessage ?? "")) {
-        throw new Error(response.errorMessage ?? "error");
+      const channel = responseChannelText(response.content);
+      await log.write("response", {
+        attempt: mi + 1, requestNumber, provider: model.provider, model: model.id,
+        stopReason: response.stopReason, source: channel.source, textLength: channel.text.length,
+        errorMessage: response.errorMessage?.slice(0, 4096) ?? null,
+        channels: response.content.map((block) => block.type),
+      });
+      // Pi reports provider failures as an error message, not a throw: HTTP
+      // errors from any provider, and setup failures (unknown or unconfigured
+      // provider) from hosts that stream through the model registry. Settling
+      // them here keeps the cause on the result; left alone they parse as
+      // `parse_error` with no error text. Auth rejections take the same route
+      // so the rotation retry below still sees them.
+      if (response.stopReason === "error") {
+        throw new Error(response.errorMessage || "provider returned an error response");
       }
       return response;
     };
@@ -840,10 +888,12 @@ export async function runDirectMemoryCompletion(
       }
 
       if (options.signal?.aborted) {
+        await log.write("aborted", { attempt: mi + 1, reason: "caller" });
         clearTimeout(timeout);
         return aborted();
       }
       if (response.stopReason === "aborted" || controller.signal.aborted) {
+        await log.write("aborted", { attempt: mi + 1, reason: "response_or_timeout" });
         lastResult = { ok: false, appliedCount: 0, fallbackReason: "aborted" };
         if (mi < models.length - 1) { clearTimeout(timeout); continue; }
         return lastResult;
@@ -885,6 +935,14 @@ export async function runDirectMemoryCompletion(
         operations = parseReviewOperations(text);
       }
 
+      await log.write("parsed", {
+        attempt: mi + 1, provider: model.provider, model: model.id,
+        stopReason: response.stopReason, source, textLength: text.length,
+        operationCount: operations?.length ?? null, unparsableThinking,
+        // Keep failed output locally so a format failure can be diagnosed.
+        ...(operations === null ? { output: text.slice(0, 16384), outputTruncated: text.length > 16384 } : {}),
+      });
+
       // A clean stop with no usable output — nothing in either channel, or
       // thinking-sourced output that parses to nothing — settles
       // empty_response: the subprocess would run the same model against the
@@ -895,20 +953,27 @@ export async function runDirectMemoryCompletion(
       // Truncated responses (stopReason "length") still fall through to
       // parse_error so the chain can retry them.
       if ((!text.trim() || unparsableThinking) && response.stopReason === "stop") {
+        await log.write("empty_response", { attempt: mi + 1 });
         lastResult = { ok: true, appliedCount: 0, fallbackReason: "empty_response" };
         if (mi < models.length - 1) { clearTimeout(timeout); continue; }
         return lastResult;
       }
       if (operations === null) {
-        lastResult = { ok: false, appliedCount: 0, fallbackReason: "parse_error" };
+        await log.write("parse_error", { attempt: mi + 1 });
+        lastResult = {
+          ok: false, appliedCount: 0, fallbackReason: "parse_error",
+          error: `reviewId=${log.reviewId}; log=${log.path ?? "unavailable"}${log.failure ? `; logError=${log.failure}` : ""}`,
+        };
         if (mi < models.length - 1) { clearTimeout(timeout); continue; }
         return lastResult;
       }
       if (operations.length === 0) {
+        await log.write("empty", { attempt: mi + 1 });
         clearTimeout(timeout);
         return { ok: true, appliedCount: 0, fallbackReason: "empty" };
       }
       if (controller.signal.aborted || options.signal?.aborted) {
+        await log.write("aborted", { attempt: mi + 1, reason: "before_apply" });
         return aborted();
       }
 
@@ -924,6 +989,10 @@ export async function runDirectMemoryCompletion(
           signal: options.signal,
         },
       );
+      await log.write("applied", {
+        attempt: mi + 1, appliedCount: applied.appliedCount, skippedCount: applied.skippedCount,
+        aborted: applied.aborted ?? false, error: applied.error?.slice(0, 4096) ?? null,
+      });
       if (applied.aborted && applied.appliedCount === 0) {
         return aborted();
       }
@@ -940,6 +1009,11 @@ export async function runDirectMemoryCompletion(
       clearTimeout(timeout);
       return { ok: true, appliedCount: applied.appliedCount };
     } catch (err) {
+      await log.write("exception", {
+        attempt: mi + 1, requestNumber, provider: model.provider, model: model.id,
+        callerAborted: options.signal?.aborted ?? false, timedOut: controller.signal.aborted,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 4096),
+      });
       if (options.signal?.aborted) {
         clearTimeout(timeout);
         return aborted();
@@ -951,7 +1025,7 @@ export async function runDirectMemoryCompletion(
           ok: false,
           appliedCount: 0,
           fallbackReason: "provider_error",
-          error: err instanceof Error ? err.message : String(err),
+          error: withHostUpgradeHint(err instanceof Error ? err.message : String(err), hostCanStream),
         };
       }
       if (mi < models.length - 1) { clearTimeout(timeout); continue; }
